@@ -10,6 +10,8 @@ unauthorized access to the system.
 
 Running the script with no arguments runs the setup process with default
 values. It can take a few optional parameters; run
+
     make-jailed-nginx --help
+
 for details.
 
