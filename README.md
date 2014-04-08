@@ -15,3 +15,5 @@ values. It can take a few optional parameters; run
 
 for details.
 
+The script expects to be run as root.
+
