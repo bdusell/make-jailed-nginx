@@ -20,10 +20,10 @@ confirm() {
 
 verify_jailed_server() {
     RESULT=0
-    ps -C nginx || { echo 'warning: nginx is not running'; return 1; }
+    ps -C nginx > /dev/null || { echo 'warning: nginx is not running'; return 1; }
     ps -C nginx | awk '{print $1}' | sed 1d | while read -r PID
     do
-        ACTUAL="$(sudo ls -l "/proc/$PID/root")"
+        ACTUAL="$(sudo readlink -f "/proc/$PID/root")"
         [ "$ACTUAL" = "$JAIL" ] || {
             echo "warning: The chrooted nginx server is running at $ACTUAL, not $JAIL"
             RESULT=1
