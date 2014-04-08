@@ -9,6 +9,7 @@ Options:
     -j|--jail   Location of the jail (default: /srv/http).
     -u|--user   The nginx user (default: http).
     -g|--group  The nginx user's group (default: http).
+    --no-64     Don't treat this as running on 64-bit Linux.
     -v|--verify Just verify that the chrooted server is running inside the
                 jail."
 }
@@ -35,11 +36,13 @@ verify_jailed_server() {
 JAIL=/srv/http
 USER=http
 GROUP=http
+LIB64=1
 while [ $# -gt 0 ]; do
 case "$1" in
 -j|--jail) shift; JAIL=$1 ;;
 -u|--user) shift; USER=$1 ;;
 -g|--group) shift; GROUP=$1 ;;
+--no-64) LIB64=0 ;;
 -v|--verify) verify_jailed_server; exit $? ;;
 -h|--help|help) usage; exit ;;
 *) usage; exit 1 ;;
@@ -72,6 +75,11 @@ do
 done
 
 (cd "$JAIL" && ln -s usr/lib lib)
+
+[ "$LIB64" -ne 0 ] && {
+    mkdir -p "$JAIL/usr/lib64"
+    (cd "$JAIL" && ln -s usr/lib64 lib64)
+}
 
 # Mount tmpfs's, limiting memory so an attacker cannot eat all the RAM
 mount -t tmpfs none "$JAIL/run" -o 'noexec,size=1M'
