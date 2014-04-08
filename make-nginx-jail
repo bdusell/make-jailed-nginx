@@ -1,0 +1,168 @@
+#!/bin/bash
+
+usage() {
+    echo "\
+$(basename $0) [options]
+Creates a chroot jail for nginx.
+
+Options:
+    -j|--jail   Location of the jail (default: /srv/http).
+    -u|--user   The nginx user (default: http).
+    -g|--group  The nginx user's group (default: http).
+    -v|--verify Just verify that the chrooted server is running inside the
+                jail."
+}
+
+confirm() {
+    echo -n "$1 [yn] "
+    head -1 | grep -iq y
+}
+
+verify_jailed_server() {
+    RESULT=0
+    ps -C nginx || { echo 'warning: nginx is not running'; return 1; }
+    ps -C nginx | awk '{print $1}' | sed 1d | while read -r PID
+    do
+        ACTUAL="$(sudo ls -l "/proc/$PID/root")"
+        [ "$ACTUAL" = "$JAIL" ] || {
+            echo "warning: The chrooted nginx server is running at $ACTUAL, not $JAIL"
+            RESULT=1
+        }
+    done
+    return $RESULT
+}
+
+JAIL=/srv/http
+USER=http
+GROUP=http
+while [ $# -gt 0 ]; do
+case "$1" in
+-j|--jail) shift; JAIL=$1 ;;
+-u|--user) shift; USER=$1 ;;
+-g|--group) shift; GROUP=$1 ;;
+-v|--verify) verify_jailed_server; exit $? ;;
+-h|--help|help) usage; exit ;;
+*) usage; exit 1 ;;
+esac
+shift
+done
+
+[ -n "$JAIL" -a -n "$USER" -a -n "$GROUP" ] || { usage; exit 1; }
+
+confirm 'This script comes with no warranty. Proceed with jail creation anyway?' || exit 1
+
+confirm 'Install nginx package?' && pacman -S nginx
+
+ls "$JAIL"/* >& /dev/null && {
+    confirm "Remove current contents of $JAIL?" && rm -rf "$JAIL"/*
+}
+
+# Create special devices
+mkdir "$JAIL/dev"
+mknod -m 0666 "$JAIL/dev/null" c 1 3
+mknod -m 0666 "$JAIL/dev/random" c 1 8
+mknod -m 0666 "$JAIL/dev/urandom" c 1 9
+
+# Create basic directory structure
+for D in \
+    "$JAIL/etc/nginx/logs" "$JAIL/usr/"{lib,bin} "$JAIL/usr/share/nginx" \
+    "$JAIL/var/"{log,lib}/nginx "$JAIL/www/cgi-bin" "$JAIL/"{run,tmp}
+do
+    mkdir -p "$D"
+done
+
+(cd "$JAIL" && ln -s usr/lib lib)
+
+# Mount tmpfs's, limiting memory so an attacker cannot eat all the RAM
+mount -t tmpfs none "$JAIL/run" -o 'noexec,size=1M'
+mount -t tmpfs none "$JAIL/tmp" -o 'noexec,size=100M'
+# Idempotentally add entries to /etc/fstab
+for L in \
+    'tmpfs /srv/http/run tmpfs rw,noexec,relatime,size=1024k 0 0' \
+    'tmpfs /srv/http/tmp tmpfs rw,noexec,relatime,size=102400k 0 0'
+do
+    grep -q "$L" /etc/fstab || echo "$L" >> /etc/fstab
+done
+
+# Populate the directory structure with files
+cp -r /usr/share/nginx/* "$JAIL/usr/share/nginx"
+cp -r /usr/share/nginx/html/* "$JAIL/www"
+cp /usr/bin/nginx "$JAIL/usr/bin"
+cp -r /var/lib/nginx "$JAIL/var/lib/nginx"
+
+# Copy over required library files
+ldd /usr/bin/nginx | sed -n 's!.*\(\s\|^\)\(/\S\+\).*!\2!p' | \
+while read -r LIB; do
+    cp "$LIB" "$JAIL$LIB"
+done
+
+# Copy more miscellaneous library and system files
+cp /usr/lib/libnss_* "$JAIL/usr/lib"
+cp -rfL \
+    /etc/{services,localtime,nsswitch.conf,nscd.conf,protocols,hosts,\
+ld.so.cache,ld.so.conf,resolv.conf,host.conf,nginx} \
+    "$JAIL/etc"
+
+# Create restricted user/group files for the jail
+cat > "$JAIL/etc/group" <<TXT
+$USER:x:33
+nobody:x:99
+TXT
+cat > "$JAIL/etc/passwd" <<TXT
+$USER:x:33:33:$GROUP:/:/bin/false
+nobody:x:99:99:nobody:/:/bin/false
+TXT
+cat > "$JAIL/etc/shadow" <<TXT
+$USER:x:14871::::::
+nobody:x:14871::::::
+TXT
+cat > "$JAIL/etc/gshadow" <<TXT
+$USER:::
+nobody:::
+TXT
+
+# Create a couple other system files
+touch "$JAIL/etc/shells"
+touch "$JAIL/run/nginx.pid"
+
+# Set very restrictive permissions
+chown -R root:root "$JAIL/"
+chown -R "$USER:$GROUP" "$JAIL/www"
+chown -R "$USER:$GROUP" "$JAIL/etc/nginx"
+chown -R "$USER:$GROUP" "$JAIL/var/"{log,lib}/nginx
+chown "$USER:$GROUP" "$JAIL/run/nginx.pid"
+
+find "$JAIL" -gid 0 -uid 0 -type d -print0 | xargs -0 sudo chmod -rw
+find "$JAIL" -gid 0 -uid 0 -type d -print0 | xargs -0 sudo chmod +x
+find "$JAIL/etc" -gid 0 -uid 0 -type f -print0 | xargs -0 sudo chmod -x
+find "$JAIL/usr/bin" -type f -print0 | xargs -0 sudo chmod ug+rx
+find "$JAIL" -group "$GROUP" -user "$USER" -print0 | xargs -0 sudo chmod o-rwx
+chmod +rw "$JAIL/tmp"
+chmod +rw "$JAIL/run"
+
+# Allow the chrooted executable to bind to port 80 without root
+setcap 'cap_net_bind_service=+ep' "$JAIL/usr/bin/nginx"
+
+# Modify nginx.service to start in the chrooted environment
+CHROOT_PREFIX="/usr/bin/chroot --userspec=$USER:$GROUP $JAIL "
+sed "\
+s|PIDFile=|PIDFile=$JAIL|;\
+s|ExecStartPre=|ExecStartPre=$CHROOT_PREFIX|;\
+s|ExecStart=|ExecStart=$CHROOT_PREFIX|;\
+s|ExecReload=|ExecReload=$CHROOT_PREFIX|;\
+s|ExecStop=|ExecStop=$CHROOT_PREFIX|;\
+" /usr/lib/systemd/system/nginx.service > /etc/systemd/system/nginx.service
+
+# Remove non-chrooted nginx installation
+confirm 'Stop currently running server?' && nginx -s stop
+confirm 'Remove non-jailed nginx installation?' && pacman -Rsc nginx
+
+confirm 'Start chrooted nginx service?' && {
+    systemctl daemon-reload
+    systemctl start nginx
+}
+
+# Verify that the nginx server is running in the chrooted environment
+verify_jailed_server && echo 'Successfully running chrooted server!'
+exit $?
+
