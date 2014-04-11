@@ -131,15 +131,12 @@ TXT
 
 # Create a couple other system files
 touch "$JAIL/etc/shells"
-# Don't create the pid file, since this confuses nginx
-#touch "$JAIL/run/nginx.pid"
 
 # Set very restrictive permissions
 chown -R root:root "$JAIL/"
 chown -R "$USER:$GROUP" "$JAIL/www"
 chown -R "$USER:$GROUP" "$JAIL/etc/nginx"
 chown -R "$USER:$GROUP" "$JAIL/var/"{log,lib}/nginx
-chown "$USER:$GROUP" "$JAIL/run/nginx.pid"
 
 find "$JAIL" -gid 0 -uid 0 -type d -print0 | xargs -0 sudo chmod -rw
 find "$JAIL" -gid 0 -uid 0 -type d -print0 | xargs -0 sudo chmod +x
