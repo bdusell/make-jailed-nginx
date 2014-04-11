@@ -131,7 +131,8 @@ TXT
 
 # Create a couple other system files
 touch "$JAIL/etc/shells"
-touch "$JAIL/run/nginx.pid"
+# Don't create the pid file, since this confuses nginx
+#touch "$JAIL/run/nginx.pid"
 
 # Set very restrictive permissions
 chown -R root:root "$JAIL/"
